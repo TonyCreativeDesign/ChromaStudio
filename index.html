@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chroma Studio — Éditeur de Palette Ultra-Premium</title>
+  <meta name="description" content="Application web avancée pour la création, l'analyse et l'exportation de palettes de couleurs professionnelles.">
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <div class="app-layout">
+    <div class="sr-only" id="live-announcer" aria-live="polite" aria-atomic="true"></div>
+
+    <aside class="sidebar sidebar-left">
+      <header class="app-header">
+        <h1 class="app-title">Chroma Studio</h1>
+        <button id="theme-toggle" class="icon-button" aria-label="Changer de thème">
+          <svg id="theme-icon-dark" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg id="theme-icon-light" class="icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+      </header>
+
+      <section class="panel" aria-labelledby="image-source-heading">
+        <h2 id="image-source-heading" class="panel-title">Source : Image</h2>
+        <div id="image-drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Déposez une image, collez-la, ou cliquez pour en sélectionner une">
+          <div id="image-placeholder" class="drop-zone-placeholder">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15c.7-1.2 1-2.5.7-3.9-.6-2.8-3.3-4.9-6.3-4.9h-1.2c-.3-1.4-1-2.7-2-3.7-1.5-1.4-3.5-2.1-5.5-1.8S2 3.8 1.4 5.6-1 10.4.8 12.8c.8 1.1 2.1 1.8 3.4 1.8H6"/><path d="M16 16.5c.3 1 .1 2.1-.5 3-1.2 1.8-3.5 2.6-5.5 1.8s-3.1-2.8-2.5-4.8c.4-1.1 1.3-2 2.5-2.3m1-2.5h1.2c2.5 0 4.8 1.6 5.8 4 .5 1.1.5 2.3 0 3.4"/></svg>
+            <p>Glisser-déposer, coller, ou <span class="link">parcourir</span></p>
+          </div>
+          <!-- Canvas pour l’aperçu (rendu contrôlé en JS) -->
+          <canvas id="image-preview" class="image-preview" aria-label="Aperçu de l'image chargée"></canvas>
+          <button id="clear-image-btn" class="icon-button clear-image-btn hidden" aria-label="Retirer l'image">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <input type="file" id="image-input" class="sr-only" accept="image/png, image/jpeg, image/webp">
+        <div class="form-group-grid">
+          <div class="form-group">
+            <label for="quantization-algo">Algorithme</label>
+            <select id="quantization-algo">
+              <option value="kmeans" selected>K-Means (Qualité)</option>
+              <option value="median-cut">Median Cut (Rapide)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="palette-size-slider">Nb Couleurs (<span id="palette-size-value">8</span>)</label>
+            <input type="range" id="palette-size-slider" min="4" max="32" value="8" step="1">
+          </div>
+        </div>
+        <button id="generate-from-image-btn" class="button primary full-width" disabled>Extraire la palette de l'image</button>
+      </section>
+
+      <section class="panel" aria-labelledby="manual-source-heading">
+        <h2 id="manual-source-heading" class="panel-title">Source : Manuelle & Harmonies</h2>
+        <div class="form-group">
+          <label for="seed-color-input">Couleur de base (seed)</label>
+          <div class="color-input-wrapper">
+            <input type="text" id="seed-color-input" placeholder="#3498db, blue, etc.">
+            <input type="color" id="seed-color-picker" class="color-picker-control" aria-label="Sélecteur de couleur de base" value="#3498DB">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="harmony-type">Type d'harmonie</label>
+          <select id="harmony-type">
+            <option value="analogous">Analogique</option>
+            <option value="monochromatic">Monochromatique</option>
+            <option value="complementary">Complémentaire</option>
+            <option value="split-complementary">Complémentaire Divisée</option>
+            <option value="triadic">Triadique</option>
+            <option value="tetradic">Tétradique (Rectangle)</option>
+          </select>
+        </div>
+        <button id="generate-from-harmony-btn" class="button full-width">Générer l'harmonie</button>
+      </section>
+
+      <section class="panel" aria-labelledby="random-source-heading">
+        <h2 id="random-source-heading" class="panel-title">Source : Aléatoire</h2>
+        <div class="form-group">
+          <label for="rng-seed-input">Graine (seed)</label>
+          <div class="input-with-button">
+            <input type="text" id="rng-seed-input" placeholder="Laisser vide pour aléatoire">
+            <button id="randomize-seed-btn" class="icon-button" aria-label="Générer une graine aléatoire">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
+        </div>
+        <button id="generate-random-btn" class="button full-width">Générer une palette aléatoire</button>
+      </section>
+    </aside>
+
+    <main class="main-content">
+      <header class="main-header">
+        <div class="history-controls">
+          <button id="undo-btn" class="button" disabled>
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 9l-7 7 7 7"/><path d="M3 16h13a5 5 0 005-5 5 5 0 00-5-5H7"/></svg>
+            Annuler
+          </button>
+          <button id="redo-btn" class="button" disabled>
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9l7 7-7 7"/><path d="M21 16H8a5 5 0 01-5-5 5 5 0 015-5h9"/></svg>
+            Rétablir
+          </button>
+        </div>
+        <div class="palette-main-actions">
+          <button id="show-help-btn" class="icon-button" aria-label="Afficher l'aide et les raccourcis clavier">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div id="palette-container" class="palette-container" aria-label="Palette de couleurs actuelle">
+        <div id="palette-empty-state" class="empty-state-full">
+          <svg class="icon-large" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0L12 2.69z"/><path d="M12 22.69V17.5"/><path d="M8.46 17.5L12 14l3.54 3.5"/></svg>
+          <h2>Votre palette est vide</h2>
+          <p>Générez une palette pour commencer.</p>
+        </div>
+      </div>
+    </main>
+
+    <aside class="sidebar sidebar-right">
+      <nav class="tabs">
+        <button id="tab-btn-editor" role="tab" aria-selected="true" aria-controls="tab-panel-editor" class="tab-button active">Éditeur</button>
+        <button id="tab-btn-analyze" role="tab" aria-selected="false" aria-controls="tab-panel-analyze" class="tab-button">Analyse</button>
+        <button id="tab-btn-export" role="tab" aria-selected="false" aria-controls="tab-panel-export" class="tab-button">Export</button>
+      </nav>
+
+      <div id="tab-panel-editor" role="tabpanel" aria-labelledby="tab-btn-editor">
+        <section id="color-editor-panel" class="panel hidden" aria-labelledby="editor-heading">
+          <h2 id="editor-heading" class="panel-title">Édition de couleur</h2>
+          <div id="editor-swatch-preview" class="editor-swatch-preview"></div>
+          <div class="form-group"><label for="editor-hex">HEX</label><input type="text" id="editor-hex" class="editor-input"></div>
+          <div class="form-group-grid">
+            <div class="form-group"><label for="editor-rgb-r">R</label><input type="number" id="editor-rgb-r" min="0" max="255" class="editor-input"></div>
+            <div class="form-group"><label for="editor-rgb-g">G</label><input type="number" id="editor-rgb-g" min="0" max="255" class="editor-input"></div>
+            <div class="form-group"><label for="editor-rgb-b">B</label><input type="number" id="editor-rgb-b" min="0" max="255" class="editor-input"></div>
+          </div>
+          <div class="form-group-grid">
+            <div class="form-group"><label for="editor-hsl-h">H</label><input type="number" id="editor-hsl-h" min="0" max="360" class="editor-input"></div>
+            <div class="form-group"><label for="editor-hsl-s">S</label><input type="number" id="editor-hsl-s" min="0" max="100" class="editor-input"></div>
+            <div class="form-group"><label for="editor-hsl-l">L</label><input type="number" id="editor-hsl-l" min="0" max="100" class="editor-input"></div>
+          </div>
+          <h3 class="panel-subtitle">Rampe Tonale</h3>
+          <button id="generate-tonal-ramp-btn" class="button full-width">Générer une rampe depuis cette couleur</button>
+        </section>
+        <div id="editor-empty-state" class="panel empty-state">
+          <p>Sélectionnez une couleur dans la palette pour l'éditer.</p>
+        </div>
+      </div>
+
+      <div id="tab-panel-analyze" role="tabpanel" aria-labelledby="tab-btn-analyze" class="hidden">
+        <section class="panel" aria-labelledby="contrast-heading">
+          <h2 id="contrast-heading" class="panel-title">Analyse de Contraste (WCAG 2.2)</h2>
+          <div id="contrast-grid-container" class="table-container">
+            <p class="empty-state">Générez une palette pour voir la grille de contraste.</p>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="vision-heading">
+          <h2 id="vision-heading" class="panel-title">Simulation Daltonisme</h2>
+          <div class="form-group">
+            <label for="vision-simulation-select" class="sr-only">Type de simulation</label>
+            <select id="vision-simulation-select">
+              <option value="normal" selected>Aucune</option>
+              <option value="protanopia">Protanopie</option>
+              <option value="deuteranopia">Deutéranopie</option>
+              <option value="tritanopia">Tritanopie</option>
+            </select>
+          </div>
+        </section>
+      </div>
+
+      <div id="tab-panel-export" role="tabpanel" aria-labelledby="tab-btn-export" class="hidden">
+        <section class="panel" aria-labelledby="export-heading">
+          <h2 id="export-heading" class="panel-title">Exporter la Palette</h2>
+          <div class="export-buttons">
+            <button id="export-json-btn" class="button" title="Alt+clic : copier dans le presse-papiers">JSON</button>
+            <button id="export-css-btn" class="button" title="Alt+clic : copier dans le presse-papiers">CSS</button>
+            <button id="export-svg-btn" class="button" title="Alt+clic : copier dans le presse-papiers">SVG</button>
+            <button id="export-png-btn" class="button">PNG</button>
+            <button id="export-txt-btn" class="button" title="Alt+clic : copier dans le presse-papiers">TXT</button>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="import-heading">
+          <h2 id="import-heading" class="panel-title">Importer une Palette</h2>
+          <div class="form-group">
+            <label for="import-file-input" class="button full-width">Importer un fichier JSON</label>
+            <input type="file" id="import-file-input" class="sr-only" accept=".json,application/json">
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Toast/snackbar discret -->
+  <div id="snackbar" class="snackbar" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Aide -->
+  <div id="help-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+    <div class="modal-content" role="document">
+      <header class="modal-header">
+        <h2 id="help-modal-title">Raccourcis Clavier</h2>
+        <button id="close-help-modal-btn" class="icon-button" aria-label="Fermer la fenêtre d'aide">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <ul class="shortcuts-list">
+          <li><span>Générer une palette aléatoire</span><kbd>Espace</kbd></li>
+          <li><span>Annuler (Undo)</span><div><kbd>Ctrl</kbd> + <kbd>Z</kbd></div></li>
+          <li><span>Rétablir (Redo)</span><div><kbd>Ctrl</kbd> + <kbd>Y</kbd></div></li>
+          <li><span>Verrouiller/Déverrouiller la couleur survolée</span><kbd>L</kbd></li>
+          <li><span>Copier le HEX de la couleur survolée</span><kbd>C</kbd></li>
+          <li><span>Ouvrir/Fermer l'aide</span><kbd>?</kbd></li>
+          <li><span>Fermer l'aide / la modale</span><kbd>Echap</kbd></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
