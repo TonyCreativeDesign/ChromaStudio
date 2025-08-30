@@ -24,6 +24,9 @@ const DOM = {
   themeToggle: document.getElementById('theme-toggle'),
   themeIconDark: document.getElementById('theme-icon-dark'),
   themeIconLight: document.getElementById('theme-icon-light'),
+  menuToggle: document.getElementById('menu-toggle'),
+  sidebarLeft: document.getElementById('sidebar-left'),
+  sidebarRight: document.getElementById('sidebar-right'),
 
   // Left Sidebar
   imageDropZone: document.getElementById('image-drop-zone'),
@@ -737,7 +740,59 @@ function toast(text, danger=false){
   setTimeout(()=>DOM.snackbar.classList.remove('show'), 1800);
 }
 
+function trapFocus(container) {
+  const selectors = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const focusables = Array.from(container.querySelectorAll(selectors));
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const handleKey = (e) => {
+    if (e.key === 'Tab') {
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    } else if (e.key === 'Escape') {
+      closeSidebar(container);
+      DOM.menuToggle.focus();
+    }
+  };
+  container.addEventListener('keydown', handleKey);
+  container._focusHandler = handleKey;
+  first.focus();
+}
+
+function releaseFocus(container) {
+  if (container._focusHandler) {
+    container.removeEventListener('keydown', container._focusHandler);
+    delete container._focusHandler;
+  }
+}
+
+function openSidebar(sidebar) {
+  sidebar.classList.add('open');
+  sidebar.setAttribute('aria-hidden', 'false');
+  trapFocus(sidebar);
+  DOM.menuToggle.setAttribute('aria-expanded', 'true');
+}
+
+function closeSidebar(sidebar) {
+  sidebar.classList.remove('open');
+  sidebar.setAttribute('aria-hidden', 'true');
+  releaseFocus(sidebar);
+  DOM.menuToggle.setAttribute('aria-expanded', 'false');
+}
+
 function bindEventListeners() {
+  // Sidebar toggle
+  if (DOM.menuToggle) {
+    DOM.menuToggle.addEventListener('click', () => {
+      const target = window.innerWidth < 768 ? DOM.sidebarLeft : DOM.sidebarRight;
+      if (target.classList.contains('open')) {
+        closeSidebar(target);
+      } else {
+        openSidebar(target);
+      }
+    });
+  }
   // Theme
   DOM.themeToggle.addEventListener('click', () => {
     const newTheme = DOM.html.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -927,6 +982,22 @@ function init() {
   // Init modules
   ColorWorker.init();
   bindEventListeners();
+
+  if (window.innerWidth < 1200) {
+    DOM.sidebarLeft.setAttribute('aria-hidden', 'true');
+    DOM.sidebarRight.setAttribute('aria-hidden', 'true');
+  }
+  window.addEventListener('resize', () => {
+    if (window.innerWidth >= 1200) {
+      closeSidebar(DOM.sidebarLeft);
+      closeSidebar(DOM.sidebarRight);
+      DOM.sidebarLeft.setAttribute('aria-hidden', 'false');
+      DOM.sidebarRight.setAttribute('aria-hidden', 'false');
+    } else {
+      DOM.sidebarLeft.setAttribute('aria-hidden', DOM.sidebarLeft.classList.contains('open') ? 'false' : 'true');
+      DOM.sidebarRight.setAttribute('aria-hidden', DOM.sidebarRight.classList.contains('open') ? 'false' : 'true');
+    }
+  });
 
   // First render
   render();
