@@ -61,7 +61,12 @@ main
   gap:1rem; padding:1rem; overflow-y:auto;
 }
 codex/update-grid-template-columns-in-style.css
+codex/update-grid-template-columns-in-style.css
 @media (max-width:1200px){.app-layout{grid-template-columns:clamp(220px,25vw,280px) 1fr}.sidebar-right{display:none}}
+
+codex/add-media-query-for-mobile-layout
+@media (max-width:1200px){.app-layout{grid-template-columns:260px 1fr}.sidebar-right{display:none}}
+main
 @media (max-width:768px){.app-layout{grid-template-columns:1fr}.sidebar-left{display:none}}
 
 .menu-toggle{display:none}
