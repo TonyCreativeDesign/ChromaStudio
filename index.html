@@ -11,7 +11,7 @@
   <div class="app-layout">
     <div class="sr-only" id="live-announcer" aria-live="polite" aria-atomic="true"></div>
 
-    <aside class="sidebar sidebar-left">
+    <aside id="sidebar-left" class="sidebar sidebar-left" aria-hidden="false">
       <header class="app-header">
         <h1 class="app-title">Chroma Studio</h1>
         <button id="theme-toggle" class="icon-button" aria-label="Changer de thème">
@@ -90,6 +90,9 @@
 
     <main class="main-content">
       <header class="main-header">
+        <button id="menu-toggle" class="icon-button menu-toggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar-left sidebar-right">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <div class="history-controls">
           <button id="undo-btn" class="button" disabled>
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 9l-7 7 7 7"/><path d="M3 16h13a5 5 0 005-5 5 5 0 00-5-5H7"/></svg>
@@ -116,7 +119,7 @@
       </div>
     </main>
 
-    <aside class="sidebar sidebar-right">
+    <aside id="sidebar-right" class="sidebar sidebar-right" aria-hidden="false">
       <nav class="tabs">
         <button id="tab-btn-editor" role="tab" aria-selected="true" aria-controls="tab-panel-editor" class="tab-button active">Éditeur</button>
         <button id="tab-btn-analyze" role="tab" aria-selected="false" aria-controls="tab-panel-analyze" class="tab-button">Analyse</button>
