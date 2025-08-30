@@ -1,7 +1,7 @@
 /**
  * @file app.js
  * @description Script principal pour Chroma Studio (premium).
- * @version 2.3.0 — stable + améliorations (aperçu canvas, worker ++, import tolérant, Alt+Export→copie, L/C, A11y)
+ * @version 2.4.0 — fixes A11y tabs, z-index toast, worker fallback, preview cleanup, theme init, imports robustes
  */
 
 // ==========================================================================
@@ -24,9 +24,6 @@ const DOM = {
   themeToggle: document.getElementById('theme-toggle'),
   themeIconDark: document.getElementById('theme-icon-dark'),
   themeIconLight: document.getElementById('theme-icon-light'),
-  menuToggle: document.getElementById('menu-toggle'),
-  sidebarLeft: document.getElementById('sidebar-left'),
-  sidebarRight: document.getElementById('sidebar-right'),
 
   // Left Sidebar
   imageDropZone: document.getElementById('image-drop-zone'),
@@ -109,7 +106,6 @@ const clone = (obj) => ('structuredClone' in window) ? structuredClone(obj) : JS
 
 /**
  * Updates the application state, saves it, and triggers a re-render.
- * (ajout : copie défensive pour fiabilité historique)
  */
 function updateState(updater, options = { addToHistory: true }) {
   const base = clone(state);
@@ -130,8 +126,7 @@ function updateState(updater, options = { addToHistory: true }) {
 function undo() {
   if (history.index > 0) {
     history.index--;
-    const previousState = clone(history.stack[history.index]);
-    state = previousState;
+    state = clone(history.stack[history.index]);
     render(); saveStateToLocalStorage(); announce('Action annulée');
   }
 }
@@ -139,8 +134,7 @@ function undo() {
 function redo() {
   if (history.index < history.stack.length - 1) {
     history.index++;
-    const nextState = clone(history.stack[history.index]);
-    state = nextState;
+    state = clone(history.stack[history.index]);
     render(); saveStateToLocalStorage(); announce('Action rétablie');
   }
 }
@@ -294,7 +288,6 @@ function updateImagePreview() {
     return;
   }
 
-  // Charger l’image et la dessiner dans le canvas à la bonne taille
   const img = new Image();
   img.onload = () => {
     const zone = DOM.imageDropZone.getBoundingClientRect();
@@ -421,7 +414,7 @@ const ColorUtils = (() => {
     ];
   };
 
-  // Naming basique (restreint)
+  // Naming basique
   const named = { Red:[255,0,0], Green:[0,128,0], Blue:[0,0,255], Yellow:[255,255,0], Cyan:[0,255,255], Magenta:[255,0,255], White:[255,255,255], Black:[0,0,0], Gray:[128,128,128], Orange:[255,165,0], Purple:[128,0,128], Brown:[165,42,42], Pink:[255,192,203] };
   self.getClosestColorName = (rgb) => {
     let best='Couleur', dMin=Infinity;
@@ -475,9 +468,7 @@ const ColorWorker = (() => {
       }
       return centroids.map(c=>c.map(Math.round));
     }
-    function medianCut(pixels,k){ // fallback léger: proxy vers K-Means++ (rapide et stable ici)
-      return kMeansPlusPlus(pixels,k,12);
-    }
+    function medianCut(pixels,k){ return kMeansPlusPlus(pixels,k,12); }
     self.onmessage = (e) => {
       const {id,type,payload}=e.data;
       try{
@@ -505,7 +496,7 @@ const ColorWorker = (() => {
         if (type==='success') r.resolve(payload); else r.reject(new Error(payload));
         delete resolvers[id];
       };
-    }catch(e){ console.error('Worker init failed', e); worker = null; }
+    }catch(e){ console.warn('Worker init failed, fallback to main thread.', e); worker = null; }
   }
 
   function run(type, payload){
@@ -516,6 +507,36 @@ const ColorWorker = (() => {
 
   return { init, run };
 })();
+
+// Fallback CPU (main thread) — utilisé si Worker indisponible
+function quantizeInMainThread(pixels, options){
+  function sq(a,b){const dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2];return dx*dx+dy*dy+dz*dz;}
+  function kMeansPlusPlus(p,k,maxIter=18){
+    if (p.length===0) return [];
+    const n=p.length, c=[p[Math.floor(Math.random()*n)]];
+    while(c.length<k){
+      const d=p.map(px=>Math.min(...c.map(cc=>sq(px,cc))));
+      const sum=d.reduce((a,v)=>a+v,0)||1; let r=Math.random()*sum, i=0;
+      while(r>0 && i<d.length){ r-=d[i++]; } c.push(p[Math.min(i,n-1)]);
+    }
+    let assign=new Array(n).fill(0);
+    for (let it=0; it<maxIter; it++){
+      let changed=false;
+      for (let i=0;i<n;i++){
+        let best=0, bestD=Infinity;
+        for (let j=0;j<k;j++){ const dd=sq(p[i],c[j]); if (dd<bestD){ bestD=dd; best=j; } }
+        if (assign[i]!==best){ assign[i]=best; changed=true; }
+      }
+      const sums=Array.from({length:k},()=>[0,0,0]); const cnt=new Array(k).fill(0);
+      for (let i=0;i<n;i++){ const g=assign[i]; const px=p[i]; sums[g][0]+=px[0]; sums[g][1]+=px[1]; sums[g][2]+=px[2]; cnt[g]++; }
+      for (let j=0;j<k;j++){ if (cnt[j]>0){ c[j]=[sums[j][0]/cnt[j], sums[j][1]/cnt[j], sums[j][2]/cnt[j]]; } }
+      if (!changed) break;
+    }
+    return c.map(x=>x.map(Math.round));
+  }
+  const k = Math.max(2, Math.min(64, options.count||8));
+  return (options.algo==='median-cut') ? kMeansPlusPlus(pixels,k,12) : kMeansPlusPlus(pixels,k,18);
+}
 
 // ==========================================================================
 // 5. CORE LOGIC & EVENT HANDLERS
@@ -533,29 +554,35 @@ function handleImageFile(file) {
 
 function generatePaletteFromImage() {
   if (!state.imageURL) return;
-  // Lire depuis le canvas d’aperçu (déjà redimensionné proprement)
   const canvas = DOM.imagePreview;
   const ctx = canvas.getContext('2d');
   if (canvas.width === 0 || canvas.height === 0) return;
 
+  DOM.paletteContainer.setAttribute('aria-busy','true');
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const pixels = [];
   for (let i=0; i<data.length; i+=4){
     const a = data[i+3];
-    // filtrer transparent et presque blanc
     if (a>128 && (data[i]<250 || data[i+1]<250 || data[i+2]<250)) {
       pixels.push([data[i], data[i+1], data[i+2]]);
     }
   }
-
   const options = { count: parseInt(DOM.paletteSizeSlider.value,10), algo: DOM.quantizationAlgo.value };
+
   ColorWorker.run('quantize', { pixels, options })
-    .then(result => {
-      updateState(s => ({ ...s, palette: result.map(rgb => ({ id: generateUID(), rgb, locked:false })) }));
-      announce(`${result.length} couleurs extraites de l'image.`);
-      toast('Palette extraite ✔');
-    })
-    .catch(err => { console.error(err); announce("Erreur lors du traitement de l'image."); toast("Erreur d'extraction", true); });
+    .then(result => applyExtracted(result))
+    .catch(() => {
+      // Fallback main thread
+      const result = quantizeInMainThread(pixels, options);
+      applyExtracted(result);
+    });
+
+  function applyExtracted(result){
+    updateState(s => ({ ...s, palette: result.map(rgb => ({ id: generateUID(), rgb, locked:false })) }));
+    announce(`${result.length} couleurs extraites de l'image.`);
+    toast('Palette extraite ✔');
+    DOM.paletteContainer.removeAttribute('aria-busy');
+  }
 }
 
 function generatePaletteFromHarmony() {
@@ -694,7 +721,6 @@ const IO = {
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target.result);
-        // Tolérant : {colors:[{rgb,locked,id?..}]} ou ["#hex", ...]
         let colors = [];
         if (Array.isArray(data)) {
           colors = data.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean).map(rgb => ({id:generateUID(), rgb, locked:false}));
@@ -702,7 +728,6 @@ const IO = {
           if (typeof data.colors[0] === 'string') {
             colors = data.colors.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean).map(rgb => ({id:generateUID(), rgb, locked:false}));
           } else {
-            // on garde ce qui ressemble déjà à ColorObject (mais re-id)
             colors = data.colors
               .map(c => Array.isArray(c.rgb) && c.rgb.length===3 ? ({id:generateUID(), rgb:c.rgb.map(n=>n|0), locked:!!c.locked}) : null)
               .filter(Boolean);
@@ -740,59 +765,22 @@ function toast(text, danger=false){
   setTimeout(()=>DOM.snackbar.classList.remove('show'), 1800);
 }
 
-function trapFocus(container) {
-  const selectors = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-  const focusables = Array.from(container.querySelectorAll(selectors));
-  if (!focusables.length) return;
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  const handleKey = (e) => {
-    if (e.key === 'Tab') {
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    } else if (e.key === 'Escape') {
-      closeSidebar(container);
-      DOM.menuToggle.focus();
-    }
-  };
-  container.addEventListener('keydown', handleKey);
-  container._focusHandler = handleKey;
-  first.focus();
-}
-
-function releaseFocus(container) {
-  if (container._focusHandler) {
-    container.removeEventListener('keydown', container._focusHandler);
-    delete container._focusHandler;
-  }
-}
-
-function openSidebar(sidebar) {
-  sidebar.classList.add('open');
-  sidebar.setAttribute('aria-hidden', 'false');
-  trapFocus(sidebar);
-  DOM.menuToggle.setAttribute('aria-expanded', 'true');
-}
-
-function closeSidebar(sidebar) {
-  sidebar.classList.remove('open');
-  sidebar.setAttribute('aria-hidden', 'true');
-  releaseFocus(sidebar);
-  DOM.menuToggle.setAttribute('aria-expanded', 'false');
+/* Tabs A11y helpers */
+function setAriaTabState(activeKey){
+  const keys = Object.keys(DOM.tabButtons);
+  keys.forEach(k => {
+    const btn = DOM.tabButtons[k];
+    const panel = DOM.tabPanels[k];
+    const isActive = k===activeKey;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', String(isActive));
+    btn.tabIndex = isActive ? 0 : -1;
+    panel.classList.toggle('hidden', !isActive);
+    panel.setAttribute('aria-hidden', String(!isActive));
+  });
 }
 
 function bindEventListeners() {
-  // Sidebar toggle
-  if (DOM.menuToggle) {
-    DOM.menuToggle.addEventListener('click', () => {
-      const target = window.innerWidth < 768 ? DOM.sidebarLeft : DOM.sidebarRight;
-      if (target.classList.contains('open')) {
-        closeSidebar(target);
-      } else {
-        openSidebar(target);
-      }
-    });
-  }
   // Theme
   DOM.themeToggle.addEventListener('click', () => {
     const newTheme = DOM.html.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -810,7 +798,11 @@ function bindEventListeners() {
   DOM.imageDropZone.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); DOM.imageInput.click(); } });
   DOM.imageInput.addEventListener('change', e => handleImageFile(e.target.files[0]));
   document.addEventListener('paste', e => { const f = e.clipboardData?.files?.[0]; if (f) handleImageFile(f); });
-  DOM.clearImageBtn.addEventListener('click', () => updateState(s => ({ ...s, imageURL: null })));
+  DOM.clearImageBtn.addEventListener('click', () => {
+    const old = state.imageURL;
+    updateState(s => ({ ...s, imageURL: null }), { addToHistory:false });
+    if (old) URL.revokeObjectURL(old);
+  });
 
   // Palette Generation
   DOM.generateFromImageBtn.addEventListener('click', generatePaletteFromImage);
@@ -891,13 +883,14 @@ function bindEventListeners() {
     toast('Rampe tonale générée ✔');
   });
 
-  // Tabs
+  // Tabs (click + A11y)
   Object.keys(DOM.tabButtons).forEach(key => {
-    DOM.tabButtons[key].addEventListener('click', () => {
-      Object.values(DOM.tabButtons).forEach(b => b.classList.remove('active'));
-      Object.values(DOM.tabPanels).forEach(p => p.classList.add('hidden'));
-      DOM.tabButtons[key].classList.add('active');
-      DOM.tabPanels[key].classList.remove('hidden');
+    DOM.tabButtons[key].addEventListener('click', () => setAriaTabState(key));
+    DOM.tabButtons[key].addEventListener('keydown', (e) => {
+      const order = ['editor','analyze','export'];
+      const idx = order.indexOf(key);
+      if (e.key === 'ArrowRight') { e.preventDefault(); const next = order[(idx+1)%order.length]; DOM.tabButtons[next].focus(); setAriaTabState(next); }
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); const prev = order[(idx-1+order.length)%order.length]; DOM.tabButtons[prev].focus(); setAriaTabState(prev); }
     });
   });
 
@@ -946,8 +939,6 @@ function bindEventListeners() {
 
 // ==========================================================================
 // 8. ICONS (inline SVG)
-//
-// (On garde les fonctions pour ne rien retirer, juste utilitaires)
 // ==========================================================================
 function lockSvg(){
   return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
@@ -968,8 +959,8 @@ function trashSvg(){
 // 9. BOOTSTRAP
 // ==========================================================================
 function init() {
-  // Theme initial
-  const savedTheme = localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  // Thème initial (évite FOUC si différent du default HTML)
+  const savedTheme = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   DOM.html.dataset.theme = savedTheme;
   DOM.themeIconDark.classList.toggle('hidden', savedTheme === 'light');
   DOM.themeIconLight.classList.toggle('hidden', savedTheme === 'dark');
@@ -983,21 +974,13 @@ function init() {
   ColorWorker.init();
   bindEventListeners();
 
-  if (window.innerWidth < 1200) {
-    DOM.sidebarLeft.setAttribute('aria-hidden', 'true');
-    DOM.sidebarRight.setAttribute('aria-hidden', 'true');
+  // Tabs state (par défaut: editor)
+  setAriaTabState('editor');
+
+  // Init label "Nb Couleurs"
+  if (DOM.paletteSizeSlider && DOM.paletteSizeValue) {
+    DOM.paletteSizeValue.textContent = DOM.paletteSizeSlider.value;
   }
-  window.addEventListener('resize', () => {
-    if (window.innerWidth >= 1200) {
-      closeSidebar(DOM.sidebarLeft);
-      closeSidebar(DOM.sidebarRight);
-      DOM.sidebarLeft.setAttribute('aria-hidden', 'false');
-      DOM.sidebarRight.setAttribute('aria-hidden', 'false');
-    } else {
-      DOM.sidebarLeft.setAttribute('aria-hidden', DOM.sidebarLeft.classList.contains('open') ? 'false' : 'true');
-      DOM.sidebarRight.setAttribute('aria-hidden', DOM.sidebarRight.classList.contains('open') ? 'false' : 'true');
-    }
-  });
 
   // First render
   render();
