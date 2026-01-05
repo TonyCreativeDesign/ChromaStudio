@@ -1,7 +1,7 @@
 /**
  * @file app.js
  * @description Script principal pour Chroma Studio (premium).
- * @version 2.4.0 — fixes A11y tabs, z-index toast, worker fallback, preview cleanup, theme init, imports robustes
+ * @version 2.5.0 — responsive drawers + iframe autosize + touch targets + scroll cleanup
  */
 
 // ==========================================================================
@@ -13,7 +13,8 @@ const CONFIG = {
   HISTORY_MAX_SIZE: 30,
   LOCAL_STORAGE_KEY: 'chromaStudioProject_v2',
   DEBOUNCE_DELAY: 300,
-  PREVIEW_MAX_W: 640, // rendu canvas plus propre
+  PREVIEW_MAX_W: 640,
+  IFRAME_POST_MESSAGE_TYPE: 'chromaStudio:height',
 };
 
 const DOM = {
@@ -25,10 +26,17 @@ const DOM = {
   themeIconDark: document.getElementById('theme-icon-dark'),
   themeIconLight: document.getElementById('theme-icon-light'),
 
+  // Drawers
+  openSourcesBtn: document.getElementById('open-sources-btn'),
+  openToolsBtn: document.getElementById('open-tools-btn'),
+  drawerOverlay: document.getElementById('drawer-overlay'),
+  sidebarSources: document.getElementById('sidebar-sources'),
+  sidebarTools: document.getElementById('sidebar-tools'),
+
   // Left Sidebar
   imageDropZone: document.getElementById('image-drop-zone'),
   imagePlaceholder: document.getElementById('image-placeholder'),
-  imagePreview: document.getElementById('image-preview'), // <canvas>
+  imagePreview: document.getElementById('image-preview'),
   clearImageBtn: document.getElementById('clear-image-btn'),
   imageInput: document.getElementById('image-input'),
   quantizationAlgo: document.getElementById('quantization-algo'),
@@ -66,8 +74,16 @@ const DOM = {
   editorEmptyState: document.getElementById('editor-empty-state'),
   editorSwatchPreview: document.getElementById('editor-swatch-preview'),
   editorHex: document.getElementById('editor-hex'),
-  editorRgb: { r: document.getElementById('editor-rgb-r'), g: document.getElementById('editor-rgb-g'), b: document.getElementById('editor-rgb-b') },
-  editorHsl: { h: document.getElementById('editor-hsl-h'), s: document.getElementById('editor-hsl-s'), l: document.getElementById('editor-hsl-l') },
+  editorRgb: {
+    r: document.getElementById('editor-rgb-r'),
+    g: document.getElementById('editor-rgb-g'),
+    b: document.getElementById('editor-rgb-b')
+  },
+  editorHsl: {
+    h: document.getElementById('editor-hsl-h'),
+    s: document.getElementById('editor-hsl-s'),
+    l: document.getElementById('editor-hsl-l')
+  },
   generateTonalRampBtn: document.getElementById('generate-tonal-ramp-btn'),
 
   // Analysis
@@ -101,12 +117,8 @@ function getInitialState() {
   return { palette: [], selectedColorId: null, imageURL: null };
 }
 
-/** Safe clone */
 const clone = (obj) => ('structuredClone' in window) ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
 
-/**
- * Updates the application state, saves it, and triggers a re-render.
- */
 function updateState(updater, options = { addToHistory: true }) {
   const base = clone(state);
   const newState = clone(updater(base));
@@ -121,6 +133,7 @@ function updateState(updater, options = { addToHistory: true }) {
   state = newState;
   render();
   saveStateToLocalStorage();
+  IframeAutoSize.report();
 }
 
 function undo() {
@@ -128,6 +141,7 @@ function undo() {
     history.index--;
     state = clone(history.stack[history.index]);
     render(); saveStateToLocalStorage(); announce('Action annulée');
+    IframeAutoSize.report();
   }
 }
 
@@ -136,6 +150,7 @@ function redo() {
     history.index++;
     state = clone(history.stack[history.index]);
     render(); saveStateToLocalStorage(); announce('Action rétablie');
+    IframeAutoSize.report();
   }
 }
 
@@ -233,6 +248,7 @@ function renderAnalysis() {
     DOM.contrastGridContainer.innerHTML = `<p class="empty-state">Ajoutez au moins deux couleurs pour l'analyse.</p>`;
     return;
   }
+
   const table = document.createElement('table');
   table.className = 'contrast-grid';
   let thead = '<thead><tr><th></th>';
@@ -254,6 +270,7 @@ function renderAnalysis() {
         else if (ratio >= 4.5) { label = 'AA'; bg = '#60a5fa'; }
         else if (ratio >= 3) { label = 'AA Large'; bg = '#facc15'; }
         else { label = 'Fail'; bg = '#f87171'; }
+
         td.title = `Contraste #${i + 1} vs #${j + 1}: ${ratio.toFixed(2)}`;
         td.innerHTML = `<span class="contrast-badge" style="background:${bg}">${label}</span>`;
       }
@@ -262,6 +279,7 @@ function renderAnalysis() {
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
+
   DOM.contrastGridContainer.innerHTML = '';
   DOM.contrastGridContainer.appendChild(table);
 }
@@ -291,10 +309,12 @@ function updateImagePreview() {
   const img = new Image();
   img.onload = () => {
     const zone = DOM.imageDropZone.getBoundingClientRect();
-    const maxW = Math.min(CONFIG.PREVIEW_MAX_W, Math.floor(zone.width));
+    const maxW = Math.min(CONFIG.PREVIEW_MAX_W, Math.floor(zone.width || CONFIG.PREVIEW_MAX_W));
     const scale = Math.min(1, maxW / img.width);
+
     canvas.width = Math.max(1, Math.round(img.width * scale));
     canvas.height = Math.max(1, Math.round(img.height * scale));
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -313,8 +333,8 @@ function updateImagePreview() {
 const ColorUtils = (() => {
   const self = {};
 
-  // Conversions
   self.rgbToHex = ([r, g, b]) => '#' + [r, g, b].map(c => Math.max(0, Math.min(255, c|0)).toString(16).padStart(2, '0')).join('').toUpperCase();
+
   self.hexToRgb = (hex) => {
     if (typeof hex !== 'string') return null;
     let h = hex.trim(); if (h.startsWith('#')) h = h.slice(1);
@@ -323,11 +343,12 @@ const ColorUtils = (() => {
     const v = parseInt(h, 16);
     return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
   };
+
   self.parseCssColorToRgb = (input) => {
     if (!input) return null;
     const hex = self.hexToRgb(input);
     if (hex) return hex;
-    // Canvas trick pour mots-clés CSS
+
     const c = document.createElement('canvas').getContext('2d');
     c.fillStyle = '#000';
     c.fillStyle = String(input);
@@ -367,21 +388,22 @@ const ColorUtils = (() => {
     return [Math.round((r+m)*255), Math.round((g+m)*255), Math.round((b+m)*255)];
   };
 
-  // WCAG
   self.getLuminance = ([r,g,b]) => {
     const a=[r,g,b].map(v => {
       v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4);
     });
     return a[0]*0.2126 + a[1]*0.7152 + a[2]*0.0722;
   };
+
   self.getContrastRatio = (rgb1, rgb2) => {
     const L1=self.getLuminance(rgb1), L2=self.getLuminance(rgb2);
     const hi=Math.max(L1,L2), lo=Math.min(L1,L2);
     return (hi+0.05)/(lo+0.05);
   };
-  self.getBestTextColor = (bgRgb) => self.getContrastRatio(bgRgb,[0,0,0]) > self.getContrastRatio(bgRgb,[255,255,255]) ? [0,0,0] : [255,255,255];
 
-  // Harmonies
+  self.getBestTextColor = (bgRgb) =>
+    self.getContrastRatio(bgRgb,[0,0,0]) > self.getContrastRatio(bgRgb,[255,255,255]) ? [0,0,0] : [255,255,255];
+
   self.getHarmony = (rgb, type, count) => {
     const [h,s,l] = self.rgbToHsl(rgb);
     const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
@@ -398,7 +420,6 @@ const ColorUtils = (() => {
     return arr.slice(0, Math.max(CONFIG.PALETTE_MIN_SIZE, Math.min(count, CONFIG.PALETTE_MAX_SIZE)));
   };
 
-  // Vision simulation
   const matrices = {
     protanopia:[0.567,0.433,0, 0.558,0.442,0, 0,0.242,0.758],
     deuteranopia:[0.625,0.375,0, 0.7,0.3,0, 0,0.3,0.7],
@@ -414,8 +435,11 @@ const ColorUtils = (() => {
     ];
   };
 
-  // Naming basique
-  const named = { Red:[255,0,0], Green:[0,128,0], Blue:[0,0,255], Yellow:[255,255,0], Cyan:[0,255,255], Magenta:[255,0,255], White:[255,255,255], Black:[0,0,0], Gray:[128,128,128], Orange:[255,165,0], Purple:[128,0,128], Brown:[165,42,42], Pink:[255,192,203] };
+  const named = {
+    Red:[255,0,0], Green:[0,128,0], Blue:[0,0,255], Yellow:[255,255,0], Cyan:[0,255,255],
+    Magenta:[255,0,255], White:[255,255,255], Black:[0,0,0], Gray:[128,128,128],
+    Orange:[255,165,0], Purple:[128,0,128], Brown:[165,42,42], Pink:[255,192,203]
+  };
   self.getClosestColorName = (rgb) => {
     let best='Couleur', dMin=Infinity;
     for (const k in named){
@@ -426,9 +450,12 @@ const ColorUtils = (() => {
     return best;
   };
 
-  // PRNG
   self.createPrng = (seedStr) => {
-    let seed = 0; for (let i=0;i<seedStr.length;i++){ seed = (seed<<5)-seed + seedStr.charCodeAt(i); seed|=0; }
+    let seed = 0;
+    for (let i=0;i<seedStr.length;i++){
+      seed = (seed<<5)-seed + seedStr.charCodeAt(i);
+      seed|=0;
+    }
     return () => { seed = Math.sin(seed)*10000; return seed - Math.floor(seed); };
   };
 
@@ -436,7 +463,7 @@ const ColorUtils = (() => {
 })();
 
 // ==========================================================================
-// 4. WEB WORKER & HEAVY TASKS (K-Means++ + fallback)
+// 4. WEB WORKER & HEAVY TASKS
 // ==========================================================================
 const ColorWorker = (() => {
   let worker; let resolvers = {}; let nextId = 0;
@@ -496,7 +523,10 @@ const ColorWorker = (() => {
         if (type==='success') r.resolve(payload); else r.reject(new Error(payload));
         delete resolvers[id];
       };
-    }catch(e){ console.warn('Worker init failed, fallback to main thread.', e); worker = null; }
+    }catch(e){
+      console.warn('Worker init failed, fallback to main thread.', e);
+      worker = null;
+    }
   }
 
   function run(type, payload){
@@ -508,7 +538,6 @@ const ColorWorker = (() => {
   return { init, run };
 })();
 
-// Fallback CPU (main thread) — utilisé si Worker indisponible
 function quantizeInMainThread(pixels, options){
   function sq(a,b){const dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2];return dx*dx+dy*dy+dz*dz;}
   function kMeansPlusPlus(p,k,maxIter=18){
@@ -559,6 +588,7 @@ function generatePaletteFromImage() {
   if (canvas.width === 0 || canvas.height === 0) return;
 
   DOM.paletteContainer.setAttribute('aria-busy','true');
+
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const pixels = [];
   for (let i=0; i<data.length; i+=4){
@@ -572,13 +602,12 @@ function generatePaletteFromImage() {
   ColorWorker.run('quantize', { pixels, options })
     .then(result => applyExtracted(result))
     .catch(() => {
-      // Fallback main thread
       const result = quantizeInMainThread(pixels, options);
       applyExtracted(result);
     });
 
   function applyExtracted(result){
-    updateState(s => ({ ...s, palette: result.map(rgb => ({ id: generateUID(), rgb, locked:false })) }));
+    updateState(s => ({ ...s, palette: result.map(rgb => ({ id: generateUID(), rgb, locked:false })), selectedColorId:null }));
     announce(`${result.length} couleurs extraites de l'image.`);
     toast('Palette extraite ✔');
     DOM.paletteContainer.removeAttribute('aria-busy');
@@ -593,6 +622,7 @@ function generatePaletteFromHarmony() {
   const count = parseInt(DOM.paletteSizeSlider.value, 10);
   const harmonyType = DOM.harmonyType.value;
   const paletteRgb = ColorUtils.getHarmony(rgb, harmonyType, count);
+
   updateState(s => ({
     ...s,
     palette: s.palette
@@ -600,6 +630,7 @@ function generatePaletteFromHarmony() {
       .concat(paletteRgb.map(r => ({ id: generateUID(), rgb: r, locked: false })))
       .slice(0, count)
   }));
+
   announce(`Palette harmonique "${harmonyType}" générée.`);
   toast('Harmonie générée ✔');
 }
@@ -608,6 +639,7 @@ function generateRandomPalette() {
   const seed = DOM.rngSeedInput.value || Date.now().toString();
   const prng = ColorUtils.createPrng(seed);
   const count = parseInt(DOM.paletteSizeSlider.value, 10);
+
   const next = Array.from({length: count}, () => ({
     id: generateUID(),
     rgb: [Math.floor(prng()*256), Math.floor(prng()*256), Math.floor(prng()*256)],
@@ -621,6 +653,7 @@ function generateRandomPalette() {
       .concat(next)
       .slice(0, count)
   }));
+
   announce('Palette aléatoire générée.');
   toast('Palette aléatoire ✔');
 }
@@ -636,11 +669,11 @@ function handleEditorInputChange(event) {
     const r = parseInt(DOM.editorRgb.r.value, 10);
     const g = parseInt(DOM.editorRgb.g.value, 10);
     const b = parseInt(DOM.editorRgb.b.value, 10);
-    if (![r,g,b].some(Number.isNaN)) newRgb = [r,g,b];
+    if (![r,g,b].some(Number.isNaN)) newRgb = [clamp255(r), clamp255(g), clamp255(b)];
   } else if (t.id.startsWith('editor-hsl')) {
-    const h = Math.max(0, Math.min(360, parseInt(DOM.editorHsl.h.value,10) || 0));
-    const s = Math.max(0, Math.min(100, parseInt(DOM.editorHsl.s.value,10) || 0));
-    const l = Math.max(0, Math.min(100, parseInt(DOM.editorHsl.l.value,10) || 0));
+    const h = clamp(parseInt(DOM.editorHsl.h.value,10) || 0, 0, 360);
+    const s = clamp(parseInt(DOM.editorHsl.s.value,10) || 0, 0, 100);
+    const l = clamp(parseInt(DOM.editorHsl.l.value,10) || 0, 0, 100);
     newRgb = ColorUtils.hslToRgb([h,s,l]);
   }
 
@@ -651,6 +684,7 @@ function handleEditorInputChange(event) {
     }));
   }
 }
+
 const debouncedEditorInputHandler = debounce(handleEditorInputChange, CONFIG.DEBOUNCE_DELAY);
 
 // ==========================================================================
@@ -722,17 +756,23 @@ const IO = {
       try {
         const data = JSON.parse(e.target.result);
         let colors = [];
+
         if (Array.isArray(data)) {
-          colors = data.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean).map(rgb => ({id:generateUID(), rgb, locked:false}));
+          colors = data.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean)
+            .map(rgb => ({id:generateUID(), rgb, locked:false}));
         } else if (Array.isArray(data.colors)) {
           if (typeof data.colors[0] === 'string') {
-            colors = data.colors.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean).map(rgb => ({id:generateUID(), rgb, locked:false}));
+            colors = data.colors.map(x => ColorUtils.hexToRgb(String(x))).filter(Boolean)
+              .map(rgb => ({id:generateUID(), rgb, locked:false}));
           } else {
             colors = data.colors
-              .map(c => Array.isArray(c.rgb) && c.rgb.length===3 ? ({id:generateUID(), rgb:c.rgb.map(n=>n|0), locked:!!c.locked}) : null)
+              .map(c => Array.isArray(c.rgb) && c.rgb.length===3
+                ? ({id:generateUID(), rgb:c.rgb.map(n=>clamp255(n|0)), locked:!!c.locked})
+                : null)
               .filter(Boolean);
           }
         }
+
         if (colors.length === 0) throw new Error('No colors');
         updateState(s => ({ ...s, palette: colors, selectedColorId: null }));
         announce('Palette importée avec succès.');
@@ -747,11 +787,216 @@ const IO = {
 };
 
 // ==========================================================================
-// 7. UTILITIES & INITIALIZATION
+// 7. DRAWERS (RESPONSIVE PANELS)
+// ==========================================================================
+const Drawer = (() => {
+  const mqLeft = window.matchMedia('(max-width: 768px)');
+  const mqRight = window.matchMedia('(max-width: 1200px)');
+  let openKey = null;
+  let lastFocus = null;
+
+  const focusableSelector = [
+    'button:not([disabled])',
+    'a[href]',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+
+  function isLeftDrawerMode(){ return mqLeft.matches; }
+  function isRightDrawerMode(){ return mqRight.matches; }
+
+  function setInert(el, inert) {
+    try {
+      if (inert) el.setAttribute('inert', '');
+      else el.removeAttribute('inert');
+    } catch {}
+  }
+
+  function open(key){
+    if (key === 'sources' && !isLeftDrawerMode()) return;
+    if (key === 'tools' && !isRightDrawerMode()) return;
+
+    close(); // une seule drawer à la fois
+
+    openKey = key;
+    lastFocus = document.activeElement;
+
+    DOM.drawerOverlay.classList.remove('hidden');
+    DOM.drawerOverlay.setAttribute('aria-hidden', 'false');
+
+    if (key === 'sources') {
+      DOM.sidebarSources.classList.add('is-open');
+      DOM.openSourcesBtn.setAttribute('aria-expanded', 'true');
+      DOM.sidebarSources.setAttribute('aria-hidden', 'false');
+      setInert(DOM.sidebarSources, false);
+      // update preview quand le panneau devient visible
+      setTimeout(()=>updateImagePreview(), 50);
+    }
+    if (key === 'tools') {
+      DOM.sidebarTools.classList.add('is-open');
+      DOM.openToolsBtn.setAttribute('aria-expanded', 'true');
+      DOM.sidebarTools.setAttribute('aria-hidden', 'false');
+      setInert(DOM.sidebarTools, false);
+    }
+
+    // focus first control in drawer
+    const target = key === 'sources' ? DOM.sidebarSources : DOM.sidebarTools;
+    const first = target.querySelector(focusableSelector);
+    if (first) first.focus({preventScroll:true});
+
+    IframeAutoSize.report();
+  }
+
+  function close(){
+    if (!openKey) return;
+
+    DOM.drawerOverlay.classList.add('hidden');
+    DOM.drawerOverlay.setAttribute('aria-hidden', 'true');
+
+    DOM.sidebarSources.classList.remove('is-open');
+    DOM.sidebarTools.classList.remove('is-open');
+
+    DOM.openSourcesBtn.setAttribute('aria-expanded', 'false');
+    DOM.openToolsBtn.setAttribute('aria-expanded', 'false');
+
+    // en mode drawer, on inert les sidebars quand fermées
+    if (isLeftDrawerMode()) {
+      DOM.sidebarSources.setAttribute('aria-hidden', 'true');
+      setInert(DOM.sidebarSources, true);
+    } else {
+      DOM.sidebarSources.removeAttribute('aria-hidden');
+      setInert(DOM.sidebarSources, false);
+    }
+
+    if (isRightDrawerMode()) {
+      DOM.sidebarTools.setAttribute('aria-hidden', 'true');
+      setInert(DOM.sidebarTools, true);
+    } else {
+      DOM.sidebarTools.removeAttribute('aria-hidden');
+      setInert(DOM.sidebarTools, false);
+    }
+
+    openKey = null;
+
+    if (lastFocus && typeof lastFocus.focus === 'function') {
+      lastFocus.focus({preventScroll:true});
+    }
+    lastFocus = null;
+
+    IframeAutoSize.report();
+  }
+
+  function toggle(key){
+    if (openKey === key) close();
+    else open(key);
+  }
+
+  function syncModes(){
+    // Left
+    if (isLeftDrawerMode()) {
+      if (!openKey || openKey !== 'sources') {
+        DOM.sidebarSources.classList.remove('is-open');
+        DOM.sidebarSources.setAttribute('aria-hidden', 'true');
+        setInert(DOM.sidebarSources, true);
+      }
+      DOM.openSourcesBtn.disabled = false;
+    } else {
+      DOM.sidebarSources.classList.remove('is-open');
+      DOM.sidebarSources.removeAttribute('aria-hidden');
+      setInert(DOM.sidebarSources, false);
+      DOM.openSourcesBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    // Right
+    if (isRightDrawerMode()) {
+      if (!openKey || openKey !== 'tools') {
+        DOM.sidebarTools.classList.remove('is-open');
+        DOM.sidebarTools.setAttribute('aria-hidden', 'true');
+        setInert(DOM.sidebarTools, true);
+      }
+      DOM.openToolsBtn.disabled = false;
+    } else {
+      DOM.sidebarTools.classList.remove('is-open');
+      DOM.sidebarTools.removeAttribute('aria-hidden');
+      setInert(DOM.sidebarTools, false);
+      DOM.openToolsBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    // Si on quitte un mode drawer alors qu'il était open, on ferme overlay
+    if ((!isLeftDrawerMode() && openKey === 'sources') || (!isRightDrawerMode() && openKey === 'tools')) {
+      close();
+    }
+
+    IframeAutoSize.report();
+  }
+
+  mqLeft.addEventListener?.('change', syncModes);
+  mqRight.addEventListener?.('change', syncModes);
+
+  return { open, close, toggle, syncModes, isOpen: ()=>!!openKey };
+})();
+
+// ==========================================================================
+// 8. IFRAME AUTO-SIZE (postMessage -> parent)
+// ==========================================================================
+const IframeAutoSize = (() => {
+  let last = 0;
+  let raf = 0;
+
+  function computeHeight(){
+    // prend le max fiable
+    const de = document.documentElement;
+    const b = document.body;
+    return Math.max(
+      de.scrollHeight, b.scrollHeight,
+      de.offsetHeight, b.offsetHeight,
+      de.clientHeight
+    );
+  }
+
+  function send(h){
+    if (Math.abs(h - last) < 2) return;
+    last = h;
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: CONFIG.IFRAME_POST_MESSAGE_TYPE, height: h }, '*');
+    }
+  }
+
+  function report(){
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(()=> {
+      raf = 0;
+      send(computeHeight());
+    });
+  }
+
+  function init(){
+    // Report initial + sur resize/orientation
+    report();
+    window.addEventListener('resize', debounce(report, 120), {passive:true});
+    window.addEventListener('orientationchange', debounce(report, 120), {passive:true});
+
+    // Observe layout changes
+    if ('ResizeObserver' in window) {
+      const ro = new ResizeObserver(() => report());
+      ro.observe(document.documentElement);
+      ro.observe(document.body);
+    }
+  }
+
+  return { init, report };
+})();
+
+// ==========================================================================
+// 9. UTILITIES & INITIALIZATION
 // ==========================================================================
 function debounce(fn, delay) {
   let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn.apply(null,a), delay); };
 }
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+function clamp255(v){ return clamp(v, 0, 255); }
 function generateUID() { return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function announce(msg) {
   DOM.liveAnnouncer.textContent = msg;
@@ -788,16 +1033,27 @@ function bindEventListeners() {
     localStorage.setItem('theme', newTheme);
     DOM.themeIconDark.classList.toggle('hidden', newTheme === 'light');
     DOM.themeIconLight.classList.toggle('hidden', newTheme === 'dark');
+    IframeAutoSize.report();
   });
+
+  // Drawer buttons
+  DOM.openSourcesBtn.addEventListener('click', () => Drawer.toggle('sources'));
+  DOM.openToolsBtn.addEventListener('click', () => Drawer.toggle('tools'));
+  DOM.drawerOverlay.addEventListener('click', () => Drawer.close());
 
   // Image Input
   DOM.imageDropZone.addEventListener('dragover', e => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); });
   DOM.imageDropZone.addEventListener('dragleave', e => e.currentTarget.classList.remove('drag-over'));
-  DOM.imageDropZone.addEventListener('drop', e => { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); handleImageFile(e.dataTransfer.files[0]); });
+  DOM.imageDropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    handleImageFile(e.dataTransfer.files[0]);
+  });
   DOM.imageDropZone.addEventListener('click', () => DOM.imageInput.click());
   DOM.imageDropZone.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); DOM.imageInput.click(); } });
   DOM.imageInput.addEventListener('change', e => handleImageFile(e.target.files[0]));
   document.addEventListener('paste', e => { const f = e.clipboardData?.files?.[0]; if (f) handleImageFile(f); });
+
   DOM.clearImageBtn.addEventListener('click', () => {
     const old = state.imageURL;
     updateState(s => ({ ...s, imageURL: null }), { addToHistory:false });
@@ -809,7 +1065,10 @@ function bindEventListeners() {
   DOM.generateFromHarmonyBtn.addEventListener('click', generatePaletteFromHarmony);
   DOM.generateRandomBtn.addEventListener('click', generateRandomPalette);
   DOM.randomizeSeedBtn.addEventListener('click', () => { DOM.rngSeedInput.value = Date.now().toString(36); });
-  DOM.paletteSizeSlider.addEventListener('input', e => { DOM.paletteSizeValue.textContent = e.target.value; });
+
+  DOM.paletteSizeSlider.addEventListener('input', e => {
+    DOM.paletteSizeValue.textContent = e.target.value;
+  });
 
   // Seed sync
   DOM.seedColorPicker.addEventListener('input', e => { DOM.seedColorInput.value = e.target.value; });
@@ -826,10 +1085,33 @@ function bindEventListeners() {
     const action = e.target.closest('[data-action]')?.dataset.action;
 
     switch(action) {
-      case 'select': updateState(s => ({ ...s, selectedColorId: id })); break;
-      case 'lock': updateState(s => ({ ...s, palette: s.palette.map(c => c.id===id ? ({...c, locked:!c.locked}) : c) })); toast('Lock togglé'); break;
-      case 'duplicate': updateState(s => { const p=[...s.palette]; const i=p.findIndex(c=>c.id===id); if(i>-1) p.splice(i+1,0,{...p[i], id:generateUID(), locked:false}); return {...s, palette:p}; }); toast('Dupliquée'); break;
-      case 'delete': updateState(s => ({ ...s, palette: s.palette.filter(c => c.id !== id), selectedColorId: s.selectedColorId===id? null:s.selectedColorId })); toast('Supprimée'); break;
+      case 'select':
+        updateState(s => ({ ...s, selectedColorId: id }));
+        break;
+
+      case 'lock':
+        updateState(s => ({ ...s, palette: s.palette.map(c => c.id===id ? ({...c, locked:!c.locked}) : c) }));
+        toast('Lock togglé');
+        break;
+
+      case 'duplicate':
+        updateState(s => {
+          const p=[...s.palette];
+          const i=p.findIndex(c=>c.id===id);
+          if(i>-1) p.splice(i+1,0,{...p[i], id:generateUID(), locked:false});
+          return {...s, palette:p};
+        });
+        toast('Dupliquée');
+        break;
+
+      case 'delete':
+        updateState(s => ({
+          ...s,
+          palette: s.palette.filter(c => c.id !== id),
+          selectedColorId: s.selectedColorId===id ? null : s.selectedColorId
+        }));
+        toast('Supprimée');
+        break;
     }
 
     if (e.target.closest('.color-code')) {
@@ -841,15 +1123,20 @@ function bindEventListeners() {
 
   // Survol pour raccourcis L/C
   DOM.paletteContainer.addEventListener('mouseover', e => {
-    const sw = e.target.closest('.color-swatch'); hoveredColorId = sw ? sw.dataset.colorId : null;
+    const sw = e.target.closest('.color-swatch');
+    hoveredColorId = sw ? sw.dataset.colorId : null;
   });
   DOM.paletteContainer.addEventListener('mouseleave', () => hoveredColorId = null);
 
   // Drag & drop réordonnancement
   DOM.paletteContainer.addEventListener('dragstart', e => {
     draggedElement = e.target.closest('.color-swatch');
-    if (draggedElement) { e.dataTransfer.effectAllowed='move'; setTimeout(()=>draggedElement.classList.add('dragging'),0); }
+    if (draggedElement) {
+      e.dataTransfer.effectAllowed='move';
+      setTimeout(()=>draggedElement.classList.add('dragging'),0);
+    }
   });
+
   DOM.paletteContainer.addEventListener('dragover', e => {
     e.preventDefault();
     const target = e.target.closest('.color-swatch');
@@ -859,11 +1146,17 @@ function bindEventListeners() {
       DOM.paletteContainer.insertBefore(draggedElement, next ? target.nextSibling : target);
     }
   });
+
   DOM.paletteContainer.addEventListener('dragend', () => {
     if (!draggedElement) return;
-    draggedElement.classList.remove('dragging'); draggedElement = null;
+    draggedElement.classList.remove('dragging');
+    draggedElement = null;
+
     const newOrderIds = [...DOM.paletteContainer.querySelectorAll('.color-swatch')].map(s => s.dataset.colorId);
-    updateState(s => ({ ...s, palette: newOrderIds.map(id => s.palette.find(c => c.id === id)) }));
+    updateState(s => {
+      const mapped = newOrderIds.map(id => s.palette.find(c => c.id === id)).filter(Boolean);
+      return { ...s, palette: mapped };
+    });
   });
 
   // Editor
@@ -898,8 +1191,8 @@ function bindEventListeners() {
   DOM.undoBtn.addEventListener('click', undo);
   DOM.redoBtn.addEventListener('click', redo);
 
-  // Analysis
-  DOM.visionSimulationSelect.addEventListener('change', renderPalette);
+  // Analysis (vision filter)
+  DOM.visionSimulationSelect.addEventListener('change', () => { renderPalette(); IframeAutoSize.report(); });
 
   // Export (Alt+clic => copy)
   DOM.exportJsonBtn.addEventListener('click', (e)=>IO.export('json', e));
@@ -909,24 +1202,41 @@ function bindEventListeners() {
   DOM.exportTxtBtn.addEventListener('click', (e)=>IO.export('txt', e));
   DOM.importFileInput.addEventListener('change', IO.import);
 
-  // Modal & Shortcuts
+  // Modal
   DOM.showHelpBtn.addEventListener('click', () => DOM.helpModal.classList.remove('hidden'));
   DOM.closeHelpModalBtn.addEventListener('click', () => DOM.helpModal.classList.add('hidden'));
   DOM.helpModal.addEventListener('click', e => { if (e.target === DOM.helpModal) DOM.helpModal.classList.add('hidden'); });
 
+  // Shortcuts
   window.addEventListener('keydown', e => {
+    // 1) drawers
+    if (e.key === 'Escape' && Drawer.isOpen()) {
+      e.preventDefault();
+      Drawer.close();
+      return;
+    }
+
+    // 2) modale help
     if (e.key === 'Escape') DOM.helpModal.classList.add('hidden');
     if (e.key === '?') { e.preventDefault(); DOM.helpModal.classList.toggle('hidden'); }
+
+    // Undo/Redo
     if (e.ctrlKey || e.metaKey) {
       if (e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
       if (e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
     }
-    if (document.activeElement?.tagName === 'INPUT') return;
+
+    // Pas de shortcuts quand on tape
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
     if (e.key === ' ') { e.preventDefault(); generateRandomPalette(); }
+
     if (e.key.toLowerCase() === 'l' && hoveredColorId){
       updateState(s => ({ ...s, palette: s.palette.map(c => c.id===hoveredColorId ? ({...c, locked:!c.locked}) : c) }));
       toast('Lock togglé');
     }
+
     if (e.key.toLowerCase() === 'c' && hoveredColorId){
       const c = state.palette.find(x=>x.id===hoveredColorId);
       if (c){ navigator.clipboard.writeText(ColorUtils.rgbToHex(c.rgb)); toast('HEX copié ✔'); }
@@ -938,7 +1248,7 @@ function bindEventListeners() {
 }
 
 // ==========================================================================
-// 8. ICONS (inline SVG)
+// 10. ICONS (inline SVG)
 // ==========================================================================
 function lockSvg(){
   return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
@@ -956,33 +1266,33 @@ function trashSvg(){
 }
 
 // ==========================================================================
-// 9. BOOTSTRAP
+// 11. BOOTSTRAP
 // ==========================================================================
 function init() {
-  // Thème initial (évite FOUC si différent du default HTML)
-  const savedTheme = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const savedTheme = localStorage.getItem('theme')
+    || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+
   DOM.html.dataset.theme = savedTheme;
   DOM.themeIconDark.classList.toggle('hidden', savedTheme === 'light');
   DOM.themeIconLight.classList.toggle('hidden', savedTheme === 'dark');
 
-  // Load state
   state = loadStateFromLocalStorage();
   history.stack = [clone(state)];
   history.index = 0;
 
-  // Init modules
   ColorWorker.init();
   bindEventListeners();
 
-  // Tabs state (par défaut: editor)
   setAriaTabState('editor');
 
-  // Init label "Nb Couleurs"
   if (DOM.paletteSizeSlider && DOM.paletteSizeValue) {
     DOM.paletteSizeValue.textContent = DOM.paletteSizeSlider.value;
   }
 
-  // First render
+  // Sync drawers mode + autosize
+  Drawer.syncModes();
+  IframeAutoSize.init();
+
   render();
   console.log('Chroma Studio Premium prêt ✅');
 }
